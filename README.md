@@ -34,7 +34,7 @@ The **vehicle state** at each time step consists of position, velocity, and orie
 
 | Description      | Equation |
 | ---------------- | -------- |
-| Vehicle State    | $`\boldsymbol{x}_k=[\boldsymbol{p}_k, \boldsymbol{v}_k, \boldsymbol{q}_k]^{T} \in R^{10}`$ |
+| Vehicle State    | $`\boldsymbol{x}_k=[\boldsymbol{p}_k, \boldsymbol{v}_k, \boldsymbol{q}_k, \boldsymbol{ab}_k, \boldsymbol{wb}_k]^{T} \in R^{16}`$ |
 | IMU Measurements | $`\boldsymbol{u}_k=[\boldsymbol{f}_k, \boldsymbol{\omega}_k]^{T} \in R^6`$ |
 
 This section of code initializes the variables for the ES-EKF solver.
@@ -43,15 +43,24 @@ This section of code initializes the variables for the ES-EKF solver.
 p_est = np.zeros([imu_f.data.shape[0], 3])  # position estimates
 v_est = np.zeros([imu_f.data.shape[0], 3])  # velocity estimates
 q_est = np.zeros([imu_f.data.shape[0], 4])  # orientation estimates as quaternions
-p_cov = np.zeros([imu_f.data.shape[0], 9, 9])  # covariance matrices at each timestep
+ab_est = np.zeros([imu_f.data.shape[0], 3])  # acc. bias estimates of imu acceleration
+wb_est = np.zeros([imu_f.data.shape[0], 3])  # ang. vel. bias estimates of imu angular vel.
+
+p_cov = np.zeros([imu_f.data.shape[0], 15, 15])  # covariance matrices at each timestep
 
 # Set initial values.
 p_est[0] = gt.p[0]
 v_est[0] = gt.v[0]
 q_est[0] = Quaternion(euler=gt.r[0]).to_numpy()
-p_cov[0] = np.zeros(9)  # covariance of estimate
+ab_est[0] = np.array([0.0, 0.0, 0.0]).reshape(1, 3)
+wb_est[0] = np.array([0.0, 0.0, 0.0]).reshape(1, 3)
+
+p_cov[0] = np.zeros(15)  # covariance of estimate
+
 gnss_i  = 0
 lidar_i = 0
+gnss_t = list(gnss.t)
+lidar_t = list(lidar.t)
 ```
 
 ## 2. Prediction
@@ -64,9 +73,11 @@ The motion model of the vehicle is given by the following set of equations
 
 | Description | Equation                                                     |
 | ----------- | ------------------------------------------------------------ |
-| Position    | $`\boldsymbol{p}_k = \boldsymbol{p}_{k-1} + {\Delta}t\boldsymbol{v}_{k-1} + \frac{{\Delta}t^2}{2}(\boldsymbol{C}_{ns}\boldsymbol{f}_{k-1} + \boldsymbol{g})`$ |
-| Velocity    | $`\boldsymbol{v}_{k} = \boldsymbol{v}_{k-1} + {\Delta}t(\boldsymbol{C}_{ns}\boldsymbol{f}_{k-1} + \boldsymbol{g})`$ |
-| Orientation | $`\boldsymbol{q}_{k}=\boldsymbol{q}_{k-1}\otimes\boldsymbol{q}(\boldsymbol{\omega}_{k-1}{\Delta}t)=\boldsymbol{\Omega}(\boldsymbol{q}(\boldsymbol{\omega}_{k-1}{\Delta}t))\boldsymbol{q}_{k-1}`$ |
+| Position    | $`\boldsymbol{p}_k = \boldsymbol{p}_{k-1} + {\Delta}t\boldsymbol{v}_{k-1} + \frac{{\Delta}t^2}{2}(\boldsymbol{C}_{ns}(\boldsymbol{f}_{k-1} - \boldsymbol{ab}_{k-1}) + \boldsymbol{g})`$ |
+| Velocity    | $`\boldsymbol{v}_{k} = \boldsymbol{v}_{k-1} + {\Delta}t(\boldsymbol{C}_{ns}(\boldsymbol{f}_{k-1} - \boldsymbol{ab}_{k-1}) + \boldsymbol{g})`$ |
+| Orientation | $`\boldsymbol{q}_{k}=\boldsymbol{q}_{k-1}\otimes\boldsymbol{q}(\boldsymbol{\omega}_{k-1}{\Delta}t)=\boldsymbol{\Omega}(\boldsymbol{q}(\boldsymbol{(\omega}_{k-1} - \boldsymbol{wb}_{k-1}){\Delta}t))\boldsymbol{q}_{k-1}`$ |
+| Acceleration Bias | $`\boldsymbol{ab}_{k}=\boldsymbol{ab}_{k-1}`$ |
+| Angular velocity Bias | $`\boldsymbol{wb}_{k}=\boldsymbol{wb}_{k-1}`$ |
 
 ### 2.2. Predicted State
 
@@ -74,10 +85,12 @@ The **predicted** vehicle state is therefore given by the equations
 
 | Description             | Equation                                                     | Variable  |
 | ----------------------- | ------------------------------------------------------------ | --------- |
-| *Predicted* State       | $`\boldsymbol{\check{x}}_{k}=[\boldsymbol{\check{p}}_{k}, \boldsymbol{\check{v}}_{k}, \boldsymbol{\check{q}}_{k}]^T`$ | `x_check` |
-| *Predicted* Position    | $`\boldsymbol{\check{p}}_k = \boldsymbol{p}_{k-1} + {\Delta}t\boldsymbol{v}_{k-1} + \frac{{\Delta}t^2}{2}(\boldsymbol{C}_{ns}\boldsymbol{f}_{k-1} + \boldsymbol{g})`$ | `p_check` |
-| *Predicted* Velocity    | $`\boldsymbol{\check{v}}_{k} = \boldsymbol{v}_{k-1} + {\Delta}t(\boldsymbol{C}_{ns}\boldsymbol{f}_{k-1} + \boldsymbol{g})`$ | `v_check` |
-| *Predicted* Orientation | $`\boldsymbol{\check{q}}_{k}=\boldsymbol{q}_{k-1}\otimes\boldsymbol{q}(\boldsymbol{\omega}_{k-1}{\Delta}t)`$ | `q_check` |
+| *Predicted* State       | $`\boldsymbol{\check{x}}_{k}=[\boldsymbol{\check{p}}_{k}, \boldsymbol{\check{v}}_{k}, \boldsymbol{\check{q}}_{k}, \boldsymbol{\check{ab}}_{k}, \boldsymbol{\check{wb}}_{k}]^T`$ | `x_check` |
+| *Predicted* Position    | $`\boldsymbol{\check{p}}_k = \boldsymbol{p}_{k-1} + {\Delta}t\boldsymbol{v}_{k-1} + \frac{{\Delta}t^2}{2}(\boldsymbol{C}_{ns}(\boldsymbol{f}_{k-1} - \boldsymbol{ab}_{k-1}) + \boldsymbol{g})`$ | `p_check` |
+| *Predicted* Velocity    | $`\boldsymbol{\check{v}}_{k} = \boldsymbol{v}_{k-1} + {\Delta}t(\boldsymbol{C}_{ns}(\boldsymbol{f}_{k-1} - \boldsymbol{ab}_{k-1}) + \boldsymbol{g})`$ | `v_check` |
+| *Predicted* Orientation | $`\boldsymbol{\check{q}}_{k}=\boldsymbol{q}_{k-1}\otimes\boldsymbol{q}((\boldsymbol{\omega}_{k-1} - \boldsymbol{wb}_{k-1}){\Delta}t)`$ | `q_check` |
+| *Predicted* Acceleration Bias | $`\boldsymbol{\check{ab}}_{k}=\boldsymbol{\check{ab}}_{k-1}`$ | `ab_check` |
+| *Predicted* Angular velocity Bias | $`\boldsymbol{\check{wb}}_{k}=\boldsymbol{\check{wb}}_{k-1}`$ | `wb_check` |
 
 This section of code iterates through the IMU inputs and updates the state.
 
@@ -87,12 +100,17 @@ for k in range(1, imu_f.data.shape[0]):  # start at 1 b/c we have initial predic
 
     # 1. Update state with IMU inputs
     q_prev = Quaternion(*q_est[k - 1, :]) # previous orientation as a quaternion object
-    q_curr = Quaternion(axis_angle=(imu_w.data[k - 1]*delta_t)) # current IMU orientation
+    ab_prev = ab_est[k - 1, :] # previous acc. bias
+    wb_prev = wb_est[k - 1, :] # previous angular vel. bias
+
+    q_curr = Quaternion(axis_angle=((imu_w.data[k - 1] - wb_prev)*delta_t)) # current IMU orientation
     c_ns = q_prev.to_mat() # previous orientation as a matrix
-    f_ns = (c_ns @ imu_f.data[k - 1]) + g # calculate sum of forces
+    f_ns = (c_ns @ (imu_f.data[k - 1] - ab_prev)) + g # calculate sum of forces
     p_check = p_est[k - 1, :] + delta_t*v_est[k - 1, :] + 0.5*(delta_t**2)*f_ns
     v_check = v_est[k - 1, :] + delta_t*f_ns
-    q_check = q_prev.quat_mult_left(q_curr)
+    q_check = q_prev.quat_mult_left(q_curr)  # q_prev * q_curr
+    ab_check = ab_prev
+    wb_check = wb_prev
 ```
 
 ### 2.3. Error State Linearization
