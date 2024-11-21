@@ -121,17 +121,17 @@ The next step is to consider the linearized error dynamics of the system.
 
 | Description       | Equation                                                     |
 | ----------------- | ------------------------------------------------------------ |
-| Error State       | $`\delta\boldsymbol{x}_{k}=[\delta\boldsymbol{p}_{k}, \delta\boldsymbol{v}_{k}, \delta\boldsymbol{\phi}_{k}]^T \in R^9`$ |
-| Error Dynamics    | $`\delta\boldsymbol{x}_{k}=\boldsymbol{F}_{k-1}\delta\boldsymbol{x}_{k-1}+\boldsymbol{L}_{k-1}\boldsymbol{n}_{k-1}`$ |
-| Measurement Noise | $`\boldsymbol{n}_{k}\sim N(\boldsymbol{0}, \boldsymbol{Q}_{k})`$ |
+| Error State       | $`\delta\boldsymbol{x}_{k}=[\delta\boldsymbol{p}_{k}, \delta\boldsymbol{v}_{k}, \delta\boldsymbol{\phi}_{k}, \delta\boldsymbol{ab}_{k}, \delta\boldsymbol{wb}_{k}]^T \in R^{15}`$ |
+| Error Dynamics    | $`\delta\boldsymbol{x}_{k}=\boldsymbol{F}_{x, k-1}\delta\boldsymbol{x}_{k-1}+ \boldsymbol{F}_{i,k-1}\boldsymbol{i}_{k-1}`$ |
+| Measurement Noise | $`\boldsymbol{i}_{k}\sim N(\boldsymbol{0}, \boldsymbol{Q}_{k})`$ |
 
 The Jacobians and the noise covariance matrix are defined as follows
 
 | Description                 | Equation                                                     | Variable |
 | --------------------------- | ------------------------------------------------------------ | -------- |
-| Motion Model Jacobian       | $`\boldsymbol{F}_{k-1}=\begin{bmatrix}\boldsymbol{I}&\boldsymbol{I}\cdot\Delta t&0\\0&\boldsymbol{I}&-[\boldsymbol{C}_{ns}\boldsymbol{f}_{k-1}]_{\times}\Delta t\\0&0&\boldsymbol{I}\end{bmatrix}`$ | `f_jac`  |
-| Motion Model Noise Jacobian | $`\boldsymbol{L}_{k-1}=\begin{bmatrix}0&0\\\boldsymbol{I}&0\\0&\boldsymbol{I}\end{bmatrix}`$ | `l_jac`  |
-| IMU Noise Covariance        | $`\boldsymbol{Q}_{k}=\Delta t^2\begin{bmatrix}\boldsymbol{I}\cdot\sigma_{acc}^2&0\\0&\boldsymbol{I}\cdot\sigma_{gyro}^2\end{bmatrix}`$ | `q_cov`  |
+| Motion Model Jacobian       | $`\boldsymbol{F}_{x,k-1}=\begin{bmatrix}\boldsymbol{I}&\boldsymbol{I}\cdot\Delta t&0&0&0\\0&\boldsymbol{I}&-\boldsymbol{C}_{ns}[\boldsymbol{f}_{k-1} - \boldsymbol{ab}_{k-1}]_{\times}\Delta t&-\boldsymbol{C}_{ns}\Delta t&0\\0&0&\boldsymbol{I} - [\boldsymbol{\omega}_{k-1} - \boldsymbol{wb}_{k-1}]_{\times}\Delta t&0&- \boldsymbol{I}\cdot\Delta t\\0&0&0&\boldsymbol{I}&0\\0&0&0&0&\boldsymbol{I}\end{bmatrix}`$ | `f_jac`  |
+| Motion Model Noise Jacobian | $`\boldsymbol{F}_{i,k-1}=\begin{bmatrix}0&0&0&0\\\boldsymbol{I}&0&0&0\\0&\boldsymbol{I}&0&0\\0&0&\boldsymbol{I}&0\\0&0&0&\boldsymbol{I}\end{bmatrix}`$ | `l_jac`  |
+| IMU Noise Covariance        | $`\boldsymbol{Q}_{k}=\begin{bmatrix}\boldsymbol{I}\cdot\sigma_{acc}^2\Delta t^2&0&0&0\\0&\boldsymbol{I}\cdot\sigma_{gyro}^2\Delta t^2&0&0\\0&0&\boldsymbol{I}\cdot\sigma_{acc\_bias}^2\Delta t&0&\\0&0&0&\boldsymbol{I}\cdot\sigma_{\omega\_bias}^2\Delta t\end{bmatrix}`$ | `q_cov`  |
 
 where ***I*** is the 3 by 3 identity matrix.
 
@@ -139,9 +139,12 @@ This section of code calculates the motion model Jacobian
 
 ```python
     # 1.1 Linearize the motion model and compute Jacobians
-    f_jac = np.eye(9) # motion model jacobian with respect to last state
+    f_jac = np.eye(15) # motion model jacobian with respect to last state
     f_jac[0:3, 3:6] = np.eye(3)*delta_t
-    f_jac[3:6, 6:9] = -skew_symmetric(c_ns @ imu_f.data[k - 1])*delta_t
+    f_jac[3:6, 6:9] = - c_ns @ skew_symmetric(imu_f.data[k - 1] - ab_prev)*delta_t
+    f_jac[3:6, 9:12] = - c_ns*delta_t
+    f_jac[6:9, 6:9] = np.eye(3) - skew_symmetric(imu_w.data[k - 1] - wb_prev)*delta_t
+    f_jac[6:9, 12:15] = - np.eye(3)*delta_t
 ```
 
 ### 2.4. Propagate Uncertainty
@@ -152,16 +155,19 @@ The uncertainty in the state is captured by the state covariance (uncertainty) m
 
 | Description                  | Equation                                                     | Variable      |
 | ---------------------------- | ------------------------------------------------------------ | ------------- |
-| *Predicted* State Covariance | $`\boldsymbol{\check{P}}_{k}=\boldsymbol{F}_{k-1}\boldsymbol{P}_{k-1}\boldsymbol{F}_{k-1}^{T}+\boldsymbol{L}_{k-1}\boldsymbol{Q}_{k-1}\boldsymbol{L}_{k-1}^{T}`$ | `p_cov_check` |
+| *Predicted* State Covariance | $`\boldsymbol{\check{P}}_{k}=\boldsymbol{F}_{x,k-1}\boldsymbol{P}_{k-1}\boldsymbol{F}_{x,k-1}^{T}+\boldsymbol{F}_{i,k-1}\boldsymbol{Q}_{k-1}\boldsymbol{F}_{i,k-1}^{T}`$ | `p_cov_check` |
 
 This section of code calculates the state uncertainty
 
 ```python
     # 2. Propagate uncertainty
-    q_cov = np.zeros((6, 6)) # IMU noise covariance
+    q_cov = np.zeros((12, 12)) # IMU noise covariance
     q_cov[0:3, 0:3] = delta_t**2 * np.eye(3)*var_imu_f
     q_cov[3:6, 3:6] = delta_t**2 * np.eye(3)*var_imu_w
-    p_cov_check = f_jac @ p_cov[k - 1, :, :] @ f_jac.T + l_jac @ q_cov @ l_jac.T
+    q_cov[6:9, 6:9] = delta_t * np.eye(3)*var_imu_f_bias
+    q_cov[9:, 9:] = delta_t * np.eye(3)*var_imu_w_bias
+
+    p_cov_check = f_jac @ p_cov[k - 1, :, :] @ f_jac.T + Fi_jac @ q_cov @ Fi_jac.T
 ```
 
 ## 3. Correction
@@ -176,13 +182,25 @@ The algorithm checks the measurement availability and calls a function to correc
     # 3. Check availability of GNSS and LIDAR measurements
     if imu_f.t[k] in gnss_t:
         gnss_i = gnss_t.index(imu_f.t[k])
-        p_check, v_check, q_check, p_cov_check = \
-            measurement_update(var_gnss, p_cov_check, gnss.data[gnss_i], p_check, v_check, q_check)
+
+        # 3.1 compute the observation jacobian
+        X_dq[6:10, 6:9] = Q_del_theta(Quaternion(*q_check))
+        H_jac = H_x @ X_dq
+
+        p_check, v_check, q_check, ab_check, wb_check, p_cov_check = \
+            measurement_update(var_gnss, p_cov_check, gnss.data[gnss_i], 
+                               p_check, v_check, q_check, ab_check, wb_check, H_jac)
     
     if imu_f.t[k] in lidar_t:
         lidar_i = lidar_t.index(imu_f.t[k])
-        p_check, v_check, q_check, p_cov_check = \
-            measurement_update(var_lidar, p_cov_check, lidar.data[lidar_i], p_check, v_check, q_check)
+
+        # 3.1 compute the observation jacobian
+        X_dq[6:10, 6:9] = Q_del_theta(Quaternion(*q_check))
+        H_jac = H_x @ X_dq
+
+        p_check, v_check, q_check, ab_check, wb_check, p_cov_check = \
+            measurement_update(var_lidar, p_cov_check, lidar.data[lidar_i], 
+                               p_check, v_check, q_check, ab_check, wb_check, H_jac)
 ```
 
 ### 3.2. Measurement Model
@@ -191,27 +209,30 @@ The measurement model is the same for both sensors. However, they have different
 
 | Description             | Equation                                                     |
 | ----------------------- | ------------------------------------------------------------ |
-| Measurement Model       | $`\begin{split} \boldsymbol{y}_{k} &= \boldsymbol{h}(\boldsymbol{x}_{k})+\boldsymbol{v}_{k} \\ & =\boldsymbol{H}_{k}\boldsymbol{x}_{k}+\boldsymbol{v}_{k} \\ & = \boldsymbol{p}_{k}+\boldsymbol{v}_{k} \end{split}`$ |
+| Measurement Model       | $`\boldsymbol{y}_{k} = \boldsymbol{h}(\boldsymbol{x}_{k})+\boldsymbol{v}_{k}`$ |
 | GNSS Measurement Noise  | $`\boldsymbol{v}_{k} \sim N(0, \boldsymbol{R}_{GNSS})`$ |
 | LIDAR Measurement Noise | $`\boldsymbol{v}_{k} \sim N(0, \boldsymbol{R}_{LIDAR})`$ |
 
 ### 3.3. Measurement Update
 
-Measurements are processed sequentially by the EKF as they arrive; in our case, both the GNSS receiver and the LIDAR provide position updates.
+Measurements are processed sequentially by the EKF as they arrive; in our case, both the GNSS receiver and the LIDAR provide position updates. Measurement Model Jacobian is obtained by chain rule as a product of `Jacobian of h() with respect x` and `Jacobian of state with respect error state`
 
 | Description                | Equation                                                     | Variable |
 | -------------------------- | ------------------------------------------------------------ | -------- |
-| Measurement Model Jacobian | $`\boldsymbol{H}_{k}=\begin{bmatrix}\boldsymbol{I}&0&0\\\end{bmatrix}`$ | `h_jac`  |
+| Measurement Model Jacobian | $`\boldsymbol{H}_{k}=\boldsymbol{H}_{x}\cdot\boldsymbol{X}_{\delta q}`$ | `H_jac`  |
+| Jacobian of h() with respect x | $`\boldsymbol{H}_{x}=\begin{bmatrix}I&0&0&0&0\end{bmatrix} \in R^{3 x 16}`$ | `H_x`  |
+| Jacobian of x with respect $\delta x$| $`\boldsymbol{X}_{\delta q}=\begin{bmatrix}\boldsymbol{I}&0&0&0&0\\0&\boldsymbol{I}&0&0&0\\0&0&Q_{\delta \theta}&0&0\\0&0&0&\boldsymbol{I}&0\\0&0&0&0&\boldsymbol{I}\end{bmatrix} \in R^{16 x 15}`$ | `X_dq`  |
+| Q_del_theta| $`\boldsymbol{Q}_{\delta \theta}=\frac{1}{2}\begin{bmatrix}-q_x&-q_y&-q_z\\q_w&-q_z&q_y\\q_z&q_w&-q_x\\-q_y&q_x&q_w\end{bmatrix}`$ | `Q_del_theta`  |
 | Sensor Noise Covariance    | $`\boldsymbol{R}=\boldsymbol{I}\cdot\sigma_{sensor}^2`$ | `r_cov`  |
 | Kalman Gain                | $`\boldsymbol{K}_{k}=\boldsymbol{\check{P}}_{k}\boldsymbol{H}_{k}^{T}(\boldsymbol{H}_{k}\boldsymbol{\check{P}}_{k}\boldsymbol{H}_{k}^{T}+\boldsymbol{R})^{-1}`$ | `k_gain` |
 
 This section of code defines the measurement update function
 
 ```python
-def measurement_update(sensor_var, p_cov_check, y_k, p_check, v_check, q_check):
+def measurement_update(sensor_var, p_cov_check, y_k, p_check, v_check, q_check, ab_check, wb_check, H_jac):
     # 3.1 Compute Kalman Gain
     r_cov = np.eye(3)*sensor_var
-    k_gain = p_cov_check @ h_jac.T @ np.linalg.inv((h_jac @ p_cov_check @ h_jac.T) + r_cov)
+    k_gain = p_cov_check @ H_jac.T @ np.linalg.inv((H_jac @ p_cov_check @ H_jac.T) + r_cov)
 ```
 
 We use the Kalman gain to compute the error state. Considering the innovation or difference between our predicted vehicle position, `p_check`, and the measured position, `y_k`. 
@@ -227,6 +248,8 @@ The error state is then used to update the nominal state vector. We also calcula
 | *Corrected* Position         | $`\hat{\boldsymbol{p}}_{k}=\check{\boldsymbol{p}}_{k}+\delta\boldsymbol{p}_{k}`$ | `p_hat`     |
 | *Corrected* Velocity         | $`\hat{\boldsymbol{v}}_{k}=\check{\boldsymbol{v}}_{k}+\delta\boldsymbol{v}_{k}`$ | `v_hat`     |
 | *Corrected* Orientation      | $`\hat{\boldsymbol{q}}_{k}=\boldsymbol{q}(\delta\boldsymbol{\phi}_{k})\otimes\check{\boldsymbol{q}}_{k}`$ | `q_hat`     |
+| *Corrected* Acceleration bias      | $`\hat{\boldsymbol{ab}}_{k}=\check{\boldsymbol{ab}}_{k}+\delta\boldsymbol{ab}_{k}`$ | `ab_hat`     |
+| *Corrected* Angular velocity bias     | $`\hat{\boldsymbol{wb}}_{k}=\check{\boldsymbol{wb}}_{k}+\delta\boldsymbol{wb}_{k}`$  | `wb_hat`     |
 | *Corrected* State Covariance | $`\hat{\boldsymbol{P}}_{k}=(\boldsymbol{I}-\boldsymbol{K}_{k}\boldsymbol{H}_{k})\check{\boldsymbol{P}}_{k}`$ | `p_cov_hat` |
 
 Finally, the function returns the corrected state and state covariants.
@@ -238,12 +261,15 @@ Finally, the function returns the corrected state and state covariants.
     # 3.3 Correct predicted state
     p_hat = p_check + error_state[0:3]
     v_hat = v_check + error_state[3:6]
-    q_hat = Quaternion(axis_angle=error_state[6:9]).quat_mult_left(Quaternion(*q_check))
+    # q_hat = Quaternion(axis_angle=error_state[6:9]).quat_mult_left(Quaternion(*q_check))
+    q_hat = Quaternion(*q_check).quat_mult_left(Quaternion(axis_angle=error_state[6:9]))
+    ab_hat = ab_check + error_state[9:12]
+    wb_hat = wb_check + error_state[12:15]
 
     # 3.4 Compute corrected covariance
-    p_cov_hat = (np.eye(9) - k_gain @ h_jac) @ p_cov_check
+    p_cov_hat = (np.eye(15) - k_gain @ H_jac) @ p_cov_check
 
-    return p_hat, v_hat, q_hat, p_cov_hat
+    return p_hat, v_hat, q_hat, ab_hat, wb_hat, p_cov_hat
 ```
 
 ## 4. Vehicle Trajectory
