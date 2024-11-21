@@ -130,7 +130,7 @@ The Jacobians and the noise covariance matrix are defined as follows
 | Description                 | Equation                                                     | Variable |
 | --------------------------- | ------------------------------------------------------------ | -------- |
 | Motion Model Jacobian       | $`\boldsymbol{F}_{x,k-1}=\begin{bmatrix}\boldsymbol{I}&\boldsymbol{I}\cdot\Delta t&0&0&0\\0&\boldsymbol{I}&-\boldsymbol{C}_{ns}[\boldsymbol{f}_{k-1} - \boldsymbol{ab}_{k-1}]_{\times}\Delta t&-\boldsymbol{C}_{ns}\Delta t&0\\0&0&\boldsymbol{I} - [\boldsymbol{\omega}_{k-1} - \boldsymbol{wb}_{k-1}]_{\times}\Delta t&0&- \boldsymbol{I}\cdot\Delta t\\0&0&0&\boldsymbol{I}&0\\0&0&0&0&\boldsymbol{I}\end{bmatrix}`$ | `f_jac`  |
-| Motion Model Noise Jacobian | $`\boldsymbol{F}_{i,k-1}=\begin{bmatrix}0&0&0&0\\\boldsymbol{I}&0&0&0\\0&\boldsymbol{I}&0&0\\0&0&\boldsymbol{I}&0\\0&0&0&\boldsymbol{I}\end{bmatrix}`$ | `l_jac`  |
+| Motion Model Noise Jacobian | $`\boldsymbol{F}_{i,k-1}=\begin{bmatrix}0&0&0&0\\\boldsymbol{I}&0&0&0\\0&\boldsymbol{I}&0&0\\0&0&\boldsymbol{I}&0\\0&0&0&\boldsymbol{I}\end{bmatrix}`$ | `Fi_jac`  |
 | IMU Noise Covariance        | $`\boldsymbol{Q}_{k}=\begin{bmatrix}\boldsymbol{I}\cdot\sigma_{acc}^2\Delta t^2&0&0&0\\0&\boldsymbol{I}\cdot\sigma_{gyro}^2\Delta t^2&0&0\\0&0&\boldsymbol{I}\cdot\sigma_{acc\_bias}^2\Delta t&0&\\0&0&0&\boldsymbol{I}\cdot\sigma_{\omega\_bias}^2\Delta t\end{bmatrix}`$ | `q_cov`  |
 
 where ***I*** is the 3 by 3 identity matrix.
