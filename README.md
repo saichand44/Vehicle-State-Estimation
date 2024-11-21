@@ -30,7 +30,7 @@ The **Kalman Filter** algorithm updates a state estimate through two stages:
 
 ### 1.1. Vehicle State Initialization
 
-The **vehicle state** at each time step consists of position, velocity, and orientation (parameterized by a unit quaternion); the inputs to the **motion model** are the IMU specific force and angular rate measurements.
+The **vehicle state** at each time step consists of position, velocity, orientation (parameterized by a unit quaternion), imu acceleration bias, imu angular velocity bias; the inputs to the **motion model** are the IMU specific force and angular rate measurements.
 
 | Description      | Equation |
 | ---------------- | -------- |
@@ -65,7 +65,7 @@ lidar_t = list(lidar.t)
 
 ## 2. Prediction
 
-The main filter loop operates by first **predicting** the next state (vehicle pose and velocity). The predicted vehicle state integrates the high-rate IMU measurements by using a nonlinear motion model.
+The main filter loop operates by first **predicting** the next state (vehicle pose, velocity, imu acceleration bias and imu angular velocity bias). The predicted vehicle state integrates the high-rate IMU measurements by using a nonlinear motion model.
 
 ### 2.1. Motion Model
 
