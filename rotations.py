@@ -181,3 +181,24 @@ class Quaternion():
         elif out == 'Quaternion':
             quat_obj = Quaternion(quat_np[0], quat_np[1], quat_np[2], quat_np[3])
             return quat_obj
+
+def Q_del_theta(q : Quaternion):
+    Q_dq = np.zeros((4, 3))
+    
+    Q_dq[0, 0] = -q.x
+    Q_dq[0, 1] = -q.y
+    Q_dq[0, 2] = -q.z
+
+    Q_dq[1, 0] = q.w
+    Q_dq[1, 1] = -q.z
+    Q_dq[1, 2] = q.y
+
+    Q_dq[2, 0] = q.z
+    Q_dq[2, 1] = q.w
+    Q_dq[2, 2] = -q.x
+
+    Q_dq[3, 0] = -q.y
+    Q_dq[3, 1] = q.x
+    Q_dq[3, 2] = q.w
+
+    return Q_dq * 0.5

@@ -6,7 +6,7 @@ import pickle
 import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
-from rotations import angle_normalize, rpy_jacobian_axis_angle, skew_symmetric, Quaternion
+from rotations import angle_normalize, rpy_jacobian_axis_angle, skew_symmetric, Quaternion, Q_del_theta
 
 #### 1. Data ###################################################################################
 
@@ -46,6 +46,14 @@ imu_f = data['imu_f']
 imu_w = data['imu_w']
 gnss = data['gnss']
 lidar = data['lidar']
+
+# print(f'imu_f data: \n{imu_f.data}')
+# print(f'imu_w data: \n{imu_w.data}')
+# print(f'GNSS data: \n{gnss.data}')
+# print(f'GNSS time: \n{gnss.t}')
+# print(f'LIDAR data: \n{lidar.data}')
+# print(f'LIDAR time: \n{lidar.t}')
+# print(f'gt.p data: \n{gt.p}')
 
 ################################################################################################
 # Let's plot the ground truth trajectory to see what it looks like. When you're testing your
@@ -96,19 +104,27 @@ lidar.data = (C_li @ lidar.data.T).T + t_i_li
 # most important aspects of a filter is setting the estimated sensor variances correctly.
 # We set the values here.
 ################################################################################################
-var_imu_f = 0.10
-var_imu_w = 0.10
-var_gnss  = 0.10
-var_lidar = 2.00
+var_imu_f = 0.10 * 100
+var_imu_f_bias = 0.10 * 10
+var_imu_w = 0.10 * 100
+var_imu_w_bias = 0.10 * 10
+var_gnss  = 0.10 * 10
+var_lidar = 2.00 * 10
 
 ################################################################################################
 # We can also set up some constants that won't change for any iteration of our solver.
 ################################################################################################
 g = np.array([0, 0, -9.81])  # gravity
-l_jac = np.zeros([9, 6])
-l_jac[3:, :] = np.eye(6)  # motion model noise jacobian
-h_jac = np.zeros([3, 9])
-h_jac[:, :3] = np.eye(3)  # measurement model jacobian
+
+Fi_jac = np.zeros([15, 12])
+Fi_jac[3:, :] = np.eye(12)  # motion model noise jacobian
+
+H_x = np.zeros((3, 16))
+H_x[:, :3] = np.eye(3) # measurement model jacobian (only predicts the position measurement)
+
+X_dq = np.zeros((16, 15))
+X_dq[:6, :6] = np.eye(6)
+X_dq[10:, 9:] = np.eye(6)
 
 #### 3. Initial Values #########################################################################
 
@@ -118,13 +134,20 @@ h_jac[:, :3] = np.eye(3)  # measurement model jacobian
 p_est = np.zeros([imu_f.data.shape[0], 3])  # position estimates
 v_est = np.zeros([imu_f.data.shape[0], 3])  # velocity estimates
 q_est = np.zeros([imu_f.data.shape[0], 4])  # orientation estimates as quaternions
-p_cov = np.zeros([imu_f.data.shape[0], 9, 9])  # covariance matrices at each timestep
+ab_est = np.zeros([imu_f.data.shape[0], 3])  # acc. bias estimates of imu acceleration
+wb_est = np.zeros([imu_f.data.shape[0], 3])  # ang. vel. bias estimates of imu angular vel.
+
+p_cov = np.zeros([imu_f.data.shape[0], 15, 15])  # covariance matrices at each timestep
 
 # Set initial values.
 p_est[0] = gt.p[0]
 v_est[0] = gt.v[0]
 q_est[0] = Quaternion(euler=gt.r[0]).to_numpy()
-p_cov[0] = np.zeros(9)  # covariance of estimate
+ab_est[0] = np.array([0.0, 0.0, 0.0]).reshape(1, 3)
+wb_est[0] = np.array([0.0, 0.0, 0.0]).reshape(1, 3)
+
+p_cov[0] = np.zeros(15)  # covariance of estimate
+
 gnss_i  = 0
 lidar_i = 0
 gnss_t = list(gnss.t)
@@ -136,10 +159,10 @@ lidar_t = list(lidar.t)
 # Since we'll need a measurement update for both the GNSS and the LIDAR data, let's make
 # a function for it.
 ################################################################################################
-def measurement_update(sensor_var, p_cov_check, y_k, p_check, v_check, q_check):
+def measurement_update(sensor_var, p_cov_check, y_k, p_check, v_check, q_check, ab_check, wb_check, H_jac):
     # 3.1 Compute Kalman Gain
     r_cov = np.eye(3)*sensor_var
-    k_gain = p_cov_check @ h_jac.T @ np.linalg.inv((h_jac @ p_cov_check @ h_jac.T) + r_cov)
+    k_gain = p_cov_check @ H_jac.T @ np.linalg.inv((H_jac @ p_cov_check @ H_jac.T) + r_cov)
 
     # 3.2 Compute error state
     error_state = k_gain @ (y_k - p_check)
@@ -147,12 +170,15 @@ def measurement_update(sensor_var, p_cov_check, y_k, p_check, v_check, q_check):
     # 3.3 Correct predicted state
     p_hat = p_check + error_state[0:3]
     v_hat = v_check + error_state[3:6]
-    q_hat = Quaternion(axis_angle=error_state[6:9]).quat_mult_left(Quaternion(*q_check))
+    # q_hat = Quaternion(axis_angle=error_state[6:9]).quat_mult_left(Quaternion(*q_check))
+    q_hat = Quaternion(*q_check).quat_mult_left(Quaternion(axis_angle=error_state[6:9]))
+    ab_hat = ab_check + error_state[9:12]
+    wb_hat = wb_check + error_state[12:15]
 
     # 3.4 Compute corrected covariance
-    p_cov_hat = (np.eye(9) - k_gain @ h_jac) @ p_cov_check
+    p_cov_hat = (np.eye(15) - k_gain @ H_jac) @ p_cov_check
 
-    return p_hat, v_hat, q_hat, p_cov_hat
+    return p_hat, v_hat, q_hat, ab_hat, wb_hat, p_cov_hat
 
 #### 5. Main Filter Loop #######################################################################
 
@@ -165,39 +191,64 @@ for k in range(1, imu_f.data.shape[0]):  # start at 1 b/c we have initial predic
 
     # 1. Update state with IMU inputs
     q_prev = Quaternion(*q_est[k - 1, :]) # previous orientation as a quaternion object
-    q_curr = Quaternion(axis_angle=(imu_w.data[k - 1]*delta_t)) # current IMU orientation
+    ab_prev = ab_est[k - 1, :] # previous acc. bias
+    wb_prev = wb_est[k - 1, :] # previous angular vel. bias
+
+    q_curr = Quaternion(axis_angle=((imu_w.data[k - 1] - wb_prev)*delta_t)) # current IMU orientation
     c_ns = q_prev.to_mat() # previous orientation as a matrix
-    f_ns = (c_ns @ imu_f.data[k - 1]) + g # calculate sum of forces
+    f_ns = (c_ns @ (imu_f.data[k - 1] - ab_prev)) + g # calculate sum of forces
     p_check = p_est[k - 1, :] + delta_t*v_est[k - 1, :] + 0.5*(delta_t**2)*f_ns
     v_check = v_est[k - 1, :] + delta_t*f_ns
-    q_check = q_prev.quat_mult_left(q_curr)
+    q_check = q_prev.quat_mult_left(q_curr)  # q_prev * q_curr
+    ab_check = ab_prev
+    wb_check = wb_prev
 
     # 1.1 Linearize the motion model and compute Jacobians
-    f_jac = np.eye(9) # motion model jacobian with respect to last state
+    f_jac = np.eye(15) # motion model jacobian with respect to last state
     f_jac[0:3, 3:6] = np.eye(3)*delta_t
-    f_jac[3:6, 6:9] = -skew_symmetric(c_ns @ imu_f.data[k - 1])*delta_t
+    f_jac[3:6, 6:9] = - c_ns @ skew_symmetric(imu_f.data[k - 1] - ab_prev)*delta_t
+    f_jac[3:6, 9:12] = - c_ns*delta_t
+    f_jac[6:9, 6:9] = np.eye(3) - skew_symmetric(imu_w.data[k - 1] - wb_prev)*delta_t
+    f_jac[6:9, 12:15] = - np.eye(3)*delta_t
 
     # 2. Propagate uncertainty
-    q_cov = np.zeros((6, 6)) # IMU noise covariance
+    q_cov = np.zeros((12, 12)) # IMU noise covariance
     q_cov[0:3, 0:3] = delta_t**2 * np.eye(3)*var_imu_f
     q_cov[3:6, 3:6] = delta_t**2 * np.eye(3)*var_imu_w
-    p_cov_check = f_jac @ p_cov[k - 1, :, :] @ f_jac.T + l_jac @ q_cov @ l_jac.T
+    q_cov[6:9, 6:9] = delta_t * np.eye(3)*var_imu_f_bias
+    q_cov[9:, 9:] = delta_t * np.eye(3)*var_imu_w_bias
+
+    p_cov_check = f_jac @ p_cov[k - 1, :, :] @ f_jac.T + Fi_jac @ q_cov @ Fi_jac.T
 
     # 3. Check availability of GNSS and LIDAR measurements
     if imu_f.t[k] in gnss_t:
         gnss_i = gnss_t.index(imu_f.t[k])
-        p_check, v_check, q_check, p_cov_check = \
-            measurement_update(var_gnss, p_cov_check, gnss.data[gnss_i], p_check, v_check, q_check)
+
+        # 3.1 compute the observation jacobian
+        X_dq[6:10, 6:9] = Q_del_theta(Quaternion(*q_check))
+        H_jac = H_x @ X_dq
+
+        p_check, v_check, q_check, ab_check, wb_check, p_cov_check = \
+            measurement_update(var_gnss, p_cov_check, gnss.data[gnss_i], 
+                               p_check, v_check, q_check, ab_check, wb_check, H_jac)
     
     if imu_f.t[k] in lidar_t:
         lidar_i = lidar_t.index(imu_f.t[k])
-        p_check, v_check, q_check, p_cov_check = \
-            measurement_update(var_lidar, p_cov_check, lidar.data[lidar_i], p_check, v_check, q_check)
+
+        # 3.1 compute the observation jacobian
+        X_dq[6:10, 6:9] = Q_del_theta(Quaternion(*q_check))
+        H_jac = H_x @ X_dq
+
+        p_check, v_check, q_check, ab_check, wb_check, p_cov_check = \
+            measurement_update(var_lidar, p_cov_check, lidar.data[lidar_i], 
+                               p_check, v_check, q_check, ab_check, wb_check, H_jac)
 
     # Update states (save)
     p_est[k, :] = p_check
     v_est[k, :] = v_check
     q_est[k, :] = q_check
+    ab_est[k, :] = ab_check
+    wb_est[k, :] = wb_check
     p_cov[k, :, :] = p_cov_check
 
 #### 6. Results and Analysis ###################################################################
@@ -244,13 +295,13 @@ for i in range(len(q_est)):
 
     # First-order approximation of RPY covariance
     J = rpy_jacobian_axis_angle(qc.to_axis_angle())
-    p_cov_euler_std.append(np.sqrt(np.diagonal(J @ p_cov[i, 6:, 6:] @ J.T)))
+    p_cov_euler_std.append(np.sqrt(np.diagonal(J @ p_cov[i, 6:9, 6:9] @ J.T)))
 
 p_est_euler = np.array(p_est_euler)
 p_cov_euler_std = np.array(p_cov_euler_std)
 
 # Get uncertainty estimates from P matrix
-p_cov_std = np.sqrt(np.diagonal(p_cov[:, :6, :6], axis1=1, axis2=2))
+p_cov_std = np.sqrt(np.diagonal(p_cov[:, :3, :3], axis1=1, axis2=2))
 
 titles = ['Easting', 'Northing', 'Up', 'Roll', 'Pitch', 'Yaw']
 for i in range(3):
@@ -268,38 +319,3 @@ for i in range(3):
     ax[1, i].set_title(titles[i+3])
 ax[1,0].set_ylabel('Radians')
 plt.show()
-
-#### 7. Submission #############################################################################
-
-################################################################################################
-# Now we can prepare your results for submission to the Coursera platform. Uncomment the
-# corresponding lines to prepare a file that will save your position estimates in a format
-# that corresponds to what we're expecting on Coursera.
-################################################################################################
-
-# Pt. 1 submission
-p1_indices = [9000, 9400, 9800, 10200, 10600]
-p1_str = ''
-for val in p1_indices:
-    for i in range(3):
-        p1_str += '%.3f ' % (p_est[val, i])
-with open('output/pt1_submission.txt', 'w') as file:
-    file.write(p1_str)
-
-# Pt. 2 submission
-# p2_indices = [9000, 9400, 9800, 10200, 10600]
-# p2_str = ''
-# for val in p2_indices:
-#     for i in range(3):
-#         p2_str += '%.3f ' % (p_est[val, i])
-# with open('output/pt2_submission.txt', 'w') as file:
-#     file.write(p2_str)
-
-# Pt. 3 submission
-# p3_indices = [6800, 7600, 8400, 9200, 10000]
-# p3_str = ''
-# for val in p3_indices:
-#     for i in range(3):
-#         p3_str += '%.3f ' % (p_est[val, i])
-# with open('output/pt3_submission.txt', 'w') as file:
-#     file.write(p3_str)
